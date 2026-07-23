@@ -1,5 +1,5 @@
-# Auto-capture bibliographic info (incl. BibTeX citation) from a paper link.
-# Place at: .github/workflows/autofill.yml
+# Auto-capture bibliographic info (title, authors, year, venue, BibTeX) from a
+# paper link and fill the issue. Place at: .github/workflows/autofill.yml
 name: Paper autofill
 
 on:
@@ -11,7 +11,6 @@ permissions:
 
 jobs:
   autofill:
-    # Only run on paper notes (label applied by the issue template)
     if: contains(join(github.event.issue.labels.*.name, ','), 'paper-note')
     runs-on: ubuntu-latest
     steps:
@@ -20,118 +19,161 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const body = issue.body || "";
-
-            // Skip if we already filled this issue (avoid loops on 'edited')
             if (body.includes("<!-- autofilled -->")) {
               core.info("Already autofilled, skipping.");
               return;
             }
 
             const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
-
-            let meta = null;   // { title, authors[], year, venue, abstract, bibtex }
-
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const UA = { "User-Agent": "paper-notes-autofill/1.0 (github-actions)" };
 
-            // ---- 1. arXiv --------------------------------------------------
-            const ax = body.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i)
-                    || body.match(/arXiv:\s*(\d{4}\.\d{4,5})/i);
-            if (ax) {
-              const id = ax[1];
-              // arXiv rate-limits shared IPs (HTTP 429). Send a UA and retry with backoff.
-              let xml = "";
-              for (let attempt = 1; attempt <= 5; attempt++) {
-                const resp = await fetch(
-                  `https://export.arxiv.org/api/query?id_list=${id}`,
-                  { headers: { "User-Agent": "paper-notes-autofill/1.0 (github-actions; mailto:noreply@example.com)" } }
-                );
-                if (resp.status === 200) {
-                  const text = await resp.text();
-                  if (text.includes("<entry>")) { xml = text; break; }
-                }
-                core.info(`arXiv attempt ${attempt}: status ${resp.status}, retrying in ${attempt * 3}s`);
-                await sleep(attempt * 3000);
+            // Fetch with retry/backoff on 429/503/5xx.
+            async function get(url, kind) {
+              for (let i = 1; i <= 4; i++) {
+                let resp;
+                try { resp = await fetch(url, { headers: UA }); }
+                catch (e) { core.info(`${kind} attempt ${i}: ${e.message}`); await sleep(i*2000); continue; }
+                if (resp.status === 200) return kind === "json" ? await resp.json() : await resp.text();
+                core.info(`${kind} ${url.split("/")[2]} attempt ${i}: status ${resp.status}`);
+                await sleep(i * 2000);
               }
-              if (!xml) {
-                core.warning(`arXiv API did not return data for ${id} after retries.`);
-              }
-              const entry = (xml.split("<entry>")[1] || "");
-              const pick = (t) => {
-                const m = entry.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`));
-                return m ? clean(m[1]) : "";
-              };
-              const authors = [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)]
-                                .map(m => clean(m[1]));
-              const primaryClass =
-                (entry.match(/<arxiv:primary_category[^>]*term="([^"]+)"/) || [])[1] || "";
-              const title = pick("title");
-              const year  = pick("published").slice(0, 4);
+              return null;
+            }
 
-              // Build a BibTeX key: firstauthorlastname + year + firsttitleword
-              const lastName  = (authors[0] || "unknown").split(/\s+/).pop();
-              const firstWord = (title.split(/\s+/)[0] || "paper").replace(/[^A-Za-z0-9]/g, "");
-              const key = `${lastName}${year}${firstWord}`.toLowerCase();
-              const bibtex = [
-                `@misc{${key},`,
-                `  title={${title}},`,
-                `  author={${authors.join(" and ")}},`,
-                `  year={${year}},`,
-                `  eprint={${id}},`,
-                `  archivePrefix={arXiv}${primaryClass ? "," : ""}`,
-                ...(primaryClass ? [`  primaryClass={${primaryClass}}`] : []),
-                `}`,
-              ].join("\n");
-
-              meta = {
-                title, authors, year,
-                venue: pick("arxiv:journal_ref") || "arXiv",
-                abstract: pick("summary"),
-                bibtex,
+            // ---- Source 1: Semantic Scholar (arXiv id or DOI) --------------
+            async function fromSemanticScholar(spec) {
+              const j = await get(
+                `https://api.semanticscholar.org/graph/v1/paper/${spec}?fields=title,authors,year,venue,abstract`,
+                "json");
+              if (!j || !j.title) return null;
+              return {
+                title: clean(j.title),
+                authors: (j.authors || []).map(a => clean(a.name)),
+                year: j.year ? String(j.year) : "",
+                venue: clean(j.venue),
+                abstract: clean(j.abstract),
               };
             }
 
-            // ---- 2. DOI via Crossref (BibTeX via content negotiation) -----
+            // ---- Source 2: arxiv.org HTML citation_* meta tags ------------
+            async function fromArxivHtml(id) {
+              const html = await get(`https://arxiv.org/abs/${id}`, "text");
+              if (!html) return null;
+              const one = (n) => (html.match(new RegExp(`<meta[^>]+name="${n}"[^>]+content="([^"]*)"`, "i")) || [])[1] || "";
+              const all = (n) => [...html.matchAll(new RegExp(`<meta[^>]+name="${n}"[^>]+content="([^"]*)"`, "ig"))].map(m => m[1]);
+              const title = clean(one("citation_title"));
+              if (!title) return null;
+              const authors = all("citation_author").map(a => {         // "Last, First" -> "First Last"
+                const p = a.split(",").map(s => s.trim());
+                return p.length === 2 ? `${p[1]} ${p[0]}` : clean(a);
+              });
+              const date = one("citation_date") || one("citation_online_date");
+              const absM = html.match(/<blockquote class="abstract[^"]*">([\s\S]*?)<\/blockquote>/i);
+              return {
+                title,
+                authors,
+                year: (date.match(/\d{4}/) || [""])[0],
+                venue: "arXiv",
+                abstract: absM ? clean(absM[1].replace(/<[^>]+>/g, "").replace(/^\s*Abstract:?/i, "")) : "",
+              };
+            }
+
+            // ---- Source 3: arXiv export API (XML) -------------------------
+            async function fromArxivApi(id) {
+              const xml = await get(`https://export.arxiv.org/api/query?id_list=${id}`, "text");
+              if (!xml || !xml.includes("<entry>")) return null;
+              const entry = xml.split("<entry>")[1] || "";
+              const pick = (t) => { const m = entry.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)); return m ? clean(m[1]) : ""; };
+              const title = pick("title");
+              if (!title) return null;
+              return {
+                title,
+                authors: [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)].map(m => clean(m[1])),
+                year: pick("published").slice(0, 4),
+                venue: pick("arxiv:journal_ref") || "arXiv",
+                abstract: pick("summary"),
+              };
+            }
+
+            // ---- Source 4: Crossref (DOI) --------------------------------
+            async function fromCrossref(doi) {
+              const j = await get(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, "json");
+              if (!j || !j.message) return null;
+              const m = j.message;
+              let bibtex = await get(
+                `https://api.crossref.org/works/${encodeURIComponent(doi)}/transform/application/x-bibtex`, "text");
+              return {
+                title: clean((m.title || [])[0]),
+                authors: (m.author || []).map(a => clean(`${a.given || ""} ${a.family || ""}`)),
+                year: String((((m["published-print"] || m["published-online"] || {})["date-parts"] || [[""]])[0][0]) || ""),
+                venue: clean((m["container-title"] || [])[0]),
+                abstract: clean((m.abstract || "").replace(/<[^>]+>/g, "")),
+                bibtex: bibtex ? clean(bibtex).replace(/,\s+/g, ",\n  ") : "",
+              };
+            }
+
+            function bibtexFor(meta, arxivId) {
+              const last = (meta.authors[0] || "unknown").split(/\s+/).pop().replace(/[^A-Za-z]/g, "");
+              const w = (meta.title.split(/\s+/)[0] || "paper").replace(/[^A-Za-z0-9]/g, "");
+              const key = `${last}${meta.year}${w}`.toLowerCase();
+              if (arxivId) {
+                return [
+                  `@misc{${key},`,
+                  `  title={${meta.title}},`,
+                  `  author={${meta.authors.join(" and ")}},`,
+                  `  year={${meta.year}},`,
+                  `  eprint={${arxivId}},`,
+                  `  archivePrefix={arXiv}`,
+                  `}`,
+                ].join("\n");
+              }
+              return [
+                `@article{${key},`,
+                `  title={${meta.title}},`,
+                `  author={${meta.authors.join(" and ")}},`,
+                `  year={${meta.year}},`,
+                ...(meta.venue ? [`  journal={${meta.venue}},`] : []),
+                `}`,
+              ].join("\n");
+            }
+
+            // ---- Resolve metadata ----------------------------------------
+            let meta = null, arxivId = null;
+            const ax = body.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i)
+                    || body.match(/arXiv:\s*(\d{4}\.\d{4,5})/i);
+            if (ax) {
+              arxivId = ax[1];
+              meta = await fromSemanticScholar(`arXiv:${arxivId}`)
+                  || await fromArxivHtml(arxivId)
+                  || await fromArxivApi(arxivId);
+              if (meta && !meta.bibtex) meta.bibtex = bibtexFor(meta, arxivId);
+            }
             if (!meta) {
               const doiM = body.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
               if (doiM) {
                 const doi = doiM[0].replace(/[.,)]+$/, "");
-                const j = await (await fetch(
-                  `https://api.crossref.org/works/${encodeURIComponent(doi)}`)).json();
-                const m = j.message || {};
-                let bibtex = "";
-                try {
-                  bibtex = clean(await (await fetch(
-                    `https://api.crossref.org/works/${encodeURIComponent(doi)}/transform/application/x-bibtex`
-                  )).text()).replace(/,\s+/g, ",\n  ");
-                } catch (e) { bibtex = ""; }
-                meta = {
-                  title: clean((m.title || [])[0]),
-                  authors: (m.author || []).map(a =>
-                    clean(`${a.given || ""} ${a.family || ""}`)),
-                  year: String((((m["published-print"] || m["published-online"] || {})
-                    ["date-parts"] || [[""]])[0][0]) || ""),
-                  venue: clean((m["container-title"] || [])[0]),
-                  abstract: clean((m.abstract || "").replace(/<[^>]+>/g, "")),
-                  bibtex,
-                };
+                meta = await fromCrossref(doi) || await fromSemanticScholar(`DOI:${doi}`);
+                if (meta && !meta.bibtex) meta.bibtex = bibtexFor(meta, null);
               }
             }
 
             if (!meta || !meta.title) {
-              core.info("No metadata found (unresolved link or API unavailable); nothing to fill.");
+              core.warning("No metadata found (unresolved link or all sources unavailable).");
               return;
             }
 
-            // ---- 3. Build the bibliography block --------------------------
+            // ---- Build & write -------------------------------------------
             const authorStr = meta.authors.length > 3
               ? `${meta.authors.slice(0, 3).join(", ")} et al.`
               : meta.authors.join(", ");
             const biblio = [
               "<!-- autofilled -->",
               "## 📚 Bibliography _(auto-captured)_",
-              `- **Title:** ${meta.title}`,
+              `- **Title:** ${meta.title || "—"}`,
               `- **Authors:** ${authorStr || "—"}`,
-              `- **Venue / Year:** ${meta.venue || "—"} ${meta.year || ""}`.trim(),
+              `- **Year:** ${meta.year || "—"}`,
+              `- **Venue:** ${meta.venue || "—"}`,
               "",
               "**Citation (BibTeX):**",
               "```bibtex",
@@ -148,11 +190,8 @@ jobs:
               "",
             ].join("\n");
 
-            // ---- 4. Update the issue (title + body) -----------------------
-            const placeholder = /\(Paper title\)/i;
-            const newTitle = (placeholder.test(issue.title) || !issue.title.trim())
-              ? meta.title
-              : issue.title;
+            const newTitle = (/\(Paper title\)/i.test(issue.title) || !issue.title.trim())
+              ? meta.title : issue.title;
 
             await github.rest.issues.update({
               owner: context.repo.owner,
