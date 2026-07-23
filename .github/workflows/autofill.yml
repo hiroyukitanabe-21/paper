@@ -31,13 +31,20 @@ jobs:
 
             let meta = null;   // { title, authors[], year, venue, abstract, bibtex }
 
+            // ---- DEBUG ----------------------------------------------------
+            core.info(`DEBUG body length: ${body.length}`);
+            core.info(`DEBUG body first 300: ${body.slice(0, 300)}`);
+
             // ---- 1. arXiv --------------------------------------------------
             const ax = body.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i)
                     || body.match(/arXiv:\s*(\d{4}\.\d{4,5})/i);
+            core.info(`DEBUG arxiv match: ${ax ? ax[1] : "NULL"}`);
             if (ax) {
               const id = ax[1];
-              const xml = await (await fetch(
-                `https://export.arxiv.org/api/query?id_list=${id}`)).text();
+              const resp = await fetch(`https://export.arxiv.org/api/query?id_list=${id}`);
+              core.info(`DEBUG arxiv API status: ${resp.status}`);
+              const xml = await resp.text();
+              core.info(`DEBUG arxiv xml length: ${xml.length}`);
               const entry = (xml.split("<entry>")[1] || "");
               const pick = (t) => {
                 const m = entry.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`));
@@ -100,6 +107,7 @@ jobs:
               }
             }
 
+            core.info(`DEBUG meta.title: ${meta ? meta.title : "(no meta)"}`);
             if (!meta || !meta.title) {
               core.info("No arXiv ID or DOI found; nothing to fill.");
               return;
