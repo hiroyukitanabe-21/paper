@@ -1,4 +1,4 @@
-# Auto-capture bibliographic info from a paper link and fill the issue.
+# Auto-capture bibliographic info (incl. BibTeX citation) from a paper link.
 # Place at: .github/workflows/autofill.yml
 name: Paper autofill
 
@@ -29,8 +29,9 @@ jobs:
 
             const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 
-            // ---- 1. Try to find an arXiv ID -------------------------------
-            let meta = null;
+            let meta = null;   // { title, authors[], year, venue, abstract, bibtex }
+
+            // ---- 1. arXiv --------------------------------------------------
             const ax = body.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i)
                     || body.match(/arXiv:\s*(\d{4}\.\d{4,5})/i);
             if (ax) {
@@ -44,16 +45,35 @@ jobs:
               };
               const authors = [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)]
                                 .map(m => clean(m[1]));
+              const primaryClass =
+                (entry.match(/<arxiv:primary_category[^>]*term="([^"]+)"/) || [])[1] || "";
+              const title = pick("title");
+              const year  = pick("published").slice(0, 4);
+
+              // Build a BibTeX key: firstauthorlastname + year + firsttitleword
+              const lastName  = (authors[0] || "unknown").split(/\s+/).pop();
+              const firstWord = (title.split(/\s+/)[0] || "paper").replace(/[^A-Za-z0-9]/g, "");
+              const key = `${lastName}${year}${firstWord}`.toLowerCase();
+              const bibtex = [
+                `@misc{${key},`,
+                `  title={${title}},`,
+                `  author={${authors.join(" and ")}},`,
+                `  year={${year}},`,
+                `  eprint={${id}},`,
+                `  archivePrefix={arXiv}${primaryClass ? "," : ""}`,
+                ...(primaryClass ? [`  primaryClass={${primaryClass}}`] : []),
+                `}`,
+              ].join("\n");
+
               meta = {
-                title: pick("title"),
-                authors,
-                year: pick("published").slice(0, 4),
+                title, authors, year,
                 venue: pick("arxiv:journal_ref") || "arXiv",
                 abstract: pick("summary"),
+                bibtex,
               };
             }
 
-            // ---- 2. Fallback: DOI via Crossref ----------------------------
+            // ---- 2. DOI via Crossref (BibTeX via content negotiation) -----
             if (!meta) {
               const doiM = body.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
               if (doiM) {
@@ -61,6 +81,12 @@ jobs:
                 const j = await (await fetch(
                   `https://api.crossref.org/works/${encodeURIComponent(doi)}`)).json();
                 const m = j.message || {};
+                let bibtex = "";
+                try {
+                  bibtex = clean(await (await fetch(
+                    `https://api.crossref.org/works/${encodeURIComponent(doi)}/transform/application/x-bibtex`
+                  )).text()).replace(/,\s+/g, ",\n  ");
+                } catch (e) { bibtex = ""; }
                 meta = {
                   title: clean((m.title || [])[0]),
                   authors: (m.author || []).map(a =>
@@ -69,6 +95,7 @@ jobs:
                     ["date-parts"] || [[""]])[0][0]) || ""),
                   venue: clean((m["container-title"] || [])[0]),
                   abstract: clean((m.abstract || "").replace(/<[^>]+>/g, "")),
+                  bibtex,
                 };
               }
             }
@@ -88,6 +115,11 @@ jobs:
               `- **Title:** ${meta.title}`,
               `- **Authors:** ${authorStr || "—"}`,
               `- **Venue / Year:** ${meta.venue || "—"} ${meta.year || ""}`.trim(),
+              "",
+              "**Citation (BibTeX):**",
+              "```bibtex",
+              meta.bibtex || "% not available",
+              "```",
               "",
               "<details><summary>Abstract</summary>",
               "",
