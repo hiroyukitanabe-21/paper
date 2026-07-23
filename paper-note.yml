@@ -10,15 +10,82 @@ body:
       placeholder: https://arxiv.org/abs/xxxx.xxxxx
     validations:
       required: true
+
+  - type: input
+    id: venue
+    attributes:
+      label: Venue / Year
+      description: Conference or journal and year (e.g. NeurIPS 2024, arXiv 2025)
+      placeholder: arXiv 2025
+    validations:
+      required: false
+
   - type: textarea
-    id: summary
+    id: tldr
     attributes:
       label: TL;DR
       description: The main claim of the paper in 2-3 sentences
     validations:
       required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem & Motivation
+      description: What question or gap does this paper address, and why does it matter?
+    validations:
+      required: false
+
+  - type: textarea
+    id: method
+    attributes:
+      label: Method / Key idea
+      description: The core approach, technique, or mechanism proposed
+    validations:
+      required: false
+
+  - type: textarea
+    id: results
+    attributes:
+      label: Results / Evidence
+      description: Main findings, key experiments, or evidence supporting the claim
+    validations:
+      required: false
+
+  - type: textarea
+    id: takeaways
+    attributes:
+      label: Takeaways
+      description: Why this matters to me / connections to my own work
+    validations:
+      required: false
+
+  - type: textarea
+    id: limitations
+    attributes:
+      label: Limitations & Open questions
+      description: Weaknesses, caveats, or questions left unanswered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: rating
+    attributes:
+      label: Rating
+      description: My subjective take on how useful/important this paper is
+      options:
+        - "⭐ Skim / reference only"
+        - "⭐⭐ Worth knowing"
+        - "⭐⭐⭐ Solid, relevant"
+        - "⭐⭐⭐⭐ Important for my work"
+        - "⭐⭐⭐⭐⭐ Must-read / foundational"
+    validations:
+      required: false
+
   - type: textarea
     id: memo
     attributes:
       label: Notes
-      description: Key ideas, impressions, open questions - anything goes
+      description: Key ideas, impressions, quotes, follow-up papers - anything goes
+    validations:
+      required: false
