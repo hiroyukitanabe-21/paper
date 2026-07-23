@@ -11,7 +11,8 @@ permissions:
 
 jobs:
   autofill:
-    if: contains(join(github.event.issue.labels.*.name, ','), 'paper-note')
+    # Triggers on every issue; the script no-ops when no arXiv/DOI link is present,
+    # so no functional "paper-note" label is needed (keeps labels category-only).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
