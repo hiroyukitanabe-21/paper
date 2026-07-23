@@ -1,0 +1,115 @@
+# Auto-capture bibliographic info from a paper link and fill the issue.
+# Place at: .github/workflows/autofill.yml
+name: Paper autofill
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  autofill:
+    # Only run on paper notes (label applied by the issue template)
+    if: contains(join(github.event.issue.labels.*.name, ','), 'paper-note')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || "";
+
+            // Skip if we already filled this issue (avoid loops on 'edited')
+            if (body.includes("<!-- autofilled -->")) {
+              core.info("Already autofilled, skipping.");
+              return;
+            }
+
+            const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+            // ---- 1. Try to find an arXiv ID -------------------------------
+            let meta = null;
+            const ax = body.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i)
+                    || body.match(/arXiv:\s*(\d{4}\.\d{4,5})/i);
+            if (ax) {
+              const id = ax[1];
+              const xml = await (await fetch(
+                `https://export.arxiv.org/api/query?id_list=${id}`)).text();
+              const entry = (xml.split("<entry>")[1] || "");
+              const pick = (t) => {
+                const m = entry.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`));
+                return m ? clean(m[1]) : "";
+              };
+              const authors = [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)]
+                                .map(m => clean(m[1]));
+              meta = {
+                title: pick("title"),
+                authors,
+                year: pick("published").slice(0, 4),
+                venue: pick("arxiv:journal_ref") || "arXiv",
+                abstract: pick("summary"),
+              };
+            }
+
+            // ---- 2. Fallback: DOI via Crossref ----------------------------
+            if (!meta) {
+              const doiM = body.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
+              if (doiM) {
+                const doi = doiM[0].replace(/[.,)]+$/, "");
+                const j = await (await fetch(
+                  `https://api.crossref.org/works/${encodeURIComponent(doi)}`)).json();
+                const m = j.message || {};
+                meta = {
+                  title: clean((m.title || [])[0]),
+                  authors: (m.author || []).map(a =>
+                    clean(`${a.given || ""} ${a.family || ""}`)),
+                  year: String((((m["published-print"] || m["published-online"] || {})
+                    ["date-parts"] || [[""]])[0][0]) || ""),
+                  venue: clean((m["container-title"] || [])[0]),
+                  abstract: clean((m.abstract || "").replace(/<[^>]+>/g, "")),
+                };
+              }
+            }
+
+            if (!meta || !meta.title) {
+              core.info("No arXiv ID or DOI found; nothing to fill.");
+              return;
+            }
+
+            // ---- 3. Build the bibliography block --------------------------
+            const authorStr = meta.authors.length > 3
+              ? `${meta.authors.slice(0, 3).join(", ")} et al.`
+              : meta.authors.join(", ");
+            const biblio = [
+              "<!-- autofilled -->",
+              "## 📚 Bibliography _(auto-captured)_",
+              `- **Title:** ${meta.title}`,
+              `- **Authors:** ${authorStr || "—"}`,
+              `- **Venue / Year:** ${meta.venue || "—"} ${meta.year || ""}`.trim(),
+              "",
+              "<details><summary>Abstract</summary>",
+              "",
+              meta.abstract || "_(not available)_",
+              "",
+              "</details>",
+              "",
+              "---",
+              "",
+            ].join("\n");
+
+            // ---- 4. Update the issue (title + body) -----------------------
+            const placeholder = /\(Paper title\)/i;
+            const newTitle = (placeholder.test(issue.title) || !issue.title.trim())
+              ? meta.title
+              : issue.title;
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              title: newTitle,
+              body: biblio + body,
+            });
+            core.info(`Autofilled issue #${issue.number}: ${meta.title}`);
