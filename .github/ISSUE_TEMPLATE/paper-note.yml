@@ -83,6 +83,22 @@ body:
       required: false
 
   - type: textarea
+    id: citation
+    attributes:
+      label: Citation
+      description: BibTeX entry or a formatted reference for this paper
+      render: bibtex
+      placeholder: |
+        @article{key2025,
+          title   = {...},
+          author  = {...},
+          journal = {arXiv preprint arXiv:xxxx.xxxxx},
+          year    = {2025}
+        }
+    validations:
+      required: false
+
+  - type: textarea
     id: memo
     attributes:
       label: Notes
