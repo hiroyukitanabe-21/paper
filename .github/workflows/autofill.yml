@@ -1,5 +1,5 @@
 # Auto-capture bibliographic info (incl. BibTeX citation) from a paper link.
-# Place at: .github/workflows/autofill.yml
+# Place at: .github/workflows/autofill.yml 
 name: Paper autofill
 
 on:
