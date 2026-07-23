@@ -1,5 +1,5 @@
 # Auto-capture bibliographic info (incl. BibTeX citation) from a paper link.
-# Place at: .github/workflows/autofill.yml 
+# Place at: .github/workflows/autofill.yml
 name: Paper autofill
 
 on:
@@ -31,20 +31,30 @@ jobs:
 
             let meta = null;   // { title, authors[], year, venue, abstract, bibtex }
 
-            // ---- DEBUG ----------------------------------------------------
-            core.info(`DEBUG body length: ${body.length}`);
-            core.info(`DEBUG body first 300: ${body.slice(0, 300)}`);
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
             // ---- 1. arXiv --------------------------------------------------
             const ax = body.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i)
                     || body.match(/arXiv:\s*(\d{4}\.\d{4,5})/i);
-            core.info(`DEBUG arxiv match: ${ax ? ax[1] : "NULL"}`);
             if (ax) {
               const id = ax[1];
-              const resp = await fetch(`https://export.arxiv.org/api/query?id_list=${id}`);
-              core.info(`DEBUG arxiv API status: ${resp.status}`);
-              const xml = await resp.text();
-              core.info(`DEBUG arxiv xml length: ${xml.length}`);
+              // arXiv rate-limits shared IPs (HTTP 429). Send a UA and retry with backoff.
+              let xml = "";
+              for (let attempt = 1; attempt <= 5; attempt++) {
+                const resp = await fetch(
+                  `https://export.arxiv.org/api/query?id_list=${id}`,
+                  { headers: { "User-Agent": "paper-notes-autofill/1.0 (github-actions; mailto:noreply@example.com)" } }
+                );
+                if (resp.status === 200) {
+                  const text = await resp.text();
+                  if (text.includes("<entry>")) { xml = text; break; }
+                }
+                core.info(`arXiv attempt ${attempt}: status ${resp.status}, retrying in ${attempt * 3}s`);
+                await sleep(attempt * 3000);
+              }
+              if (!xml) {
+                core.warning(`arXiv API did not return data for ${id} after retries.`);
+              }
               const entry = (xml.split("<entry>")[1] || "");
               const pick = (t) => {
                 const m = entry.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`));
@@ -107,9 +117,8 @@ jobs:
               }
             }
 
-            core.info(`DEBUG meta.title: ${meta ? meta.title : "(no meta)"}`);
             if (!meta || !meta.title) {
-              core.info("No arXiv ID or DOI found; nothing to fill.");
+              core.info("No metadata found (unresolved link or API unavailable); nothing to fill.");
               return;
             }
 
