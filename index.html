@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paper Notes</title>
+<style>
+:root { --ink:#1c2330; --soft:#5b6472; --line:#e3e2dc; --accent:#b31b1b; }
+* { box-sizing:border-box; }
+body { margin:0 auto; max-width:720px; padding:0 20px 80px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:16px; line-height:1.75; color:var(--ink); background:#fdfdfb; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+header { padding:40px 0 12px; border-bottom:3px double var(--line); }
+header a { font-size:28px; font-weight:700; color:var(--ink); }
+nav { display:flex; flex-wrap:wrap; gap:8px; padding:16px 0 4px; }
+.chip { font-size:12.5px; color:var(--soft); border:1px solid var(--line);
+  border-left:3px solid var(--chip,#6b7280); border-radius:3px; padding:2px 10px; background:#fff; }
+.chip.active { color:#fff; background:var(--ink); border-color:var(--ink); }
+.card { padding:20px 0; border-bottom:1px solid var(--line); }
+.num { font-size:12px; color:var(--accent); }
+h2 { margin:2px 0 6px; font-size:19px; line-height:1.45; }
+h2 a { color:var(--ink); }
+.meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:12.5px; color:var(--soft); }
+.pager { display:flex; justify-content:space-between; padding-top:24px; }
+.status { padding:40px 0; color:var(--soft); }
+article.detail { padding-top:24px; }
+.detail h1 { font-size:24px; line-height:1.4; margin:4px 0 8px; }
+.body { margin-top:24px; }
+.body h2 { font-size:18px; border-bottom:1px solid var(--line); padding-bottom:4px; margin-top:28px; }
+.body pre { background:#f4f4f0; border:1px solid var(--line); border-radius:4px; padding:12px; overflow-x:auto; font-size:13.5px; }
+.body blockquote { margin:16px 0; padding:2px 16px; border-left:3px solid var(--accent); color:var(--soft); }
+.body img { max-width:100%; }
+.body table { border-collapse:collapse; }
+.body th,.body td { border:1px solid var(--line); padding:6px 10px; font-size:14.5px; }
+</style>
+</head>
+<body>
+<header><a href="#/">Paper Notes</a></header>
+<nav id="labels"></nav>
+<main id="app"><p class="status">Loading…</p></main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js"></script>
+<script>
+const OWNER = "hiroyukitanabe-21";
+const REPO  = "paper";
+const PER_PAGE = 20;
+
+const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
+const app = document.getElementById("app");
+const nav = document.getElementById("labels");
+
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const date = iso => new Date(iso).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});
+const hash = (label, page) => {
+  const p = new URLSearchParams();
+  if (label) p.set("label", label);
+  if (page > 1) p.set("page", page);
+  return "#/" + (p.toString() ? "?" + p : "");
+};
+
+async function get(path) {
+  const r = await fetch(API + path);
+  if (r.status === 403 || r.status === 429)
+    throw new Error("GitHub API rate limit reached. Please wait a while and reload.");
+  if (!r.ok) throw new Error("API error: " + r.status);
+  return r.json();
+}
+
+const chips = (labels, active) => labels.map(l =>
+  `<a class="chip${l.name === active ? " active" : ""}" style="--chip:#${l.color}"
+      href="${hash(l.name, 1)}">${esc(l.name)}</a>`).join("");
+
+async function showLabels(active) {
+  try {
+    const labels = await get("/labels?per_page=100");
+    nav.innerHTML = `<a class="chip${active ? "" : " active"}" href="#/">All</a>` + chips(labels, active);
+  } catch { nav.innerHTML = ""; }
+}
+
+async function showList(label, page) {
+  const p = new URLSearchParams({ state:"open", per_page:PER_PAGE, page, sort:"created", direction:"desc" });
+  if (label) p.set("labels", label);
+  const issues = (await get("/issues?" + p)).filter(i => !i.pull_request);
+  if (!issues.length) { app.innerHTML = `<p class="status">No notes yet.</p>`; return; }
+  app.innerHTML = issues.map(i => `
+    <div class="card">
+      <span class="num">No. ${i.number}</span>
+      <h2><a href="#/issue/${i.number}">${esc(i.title)}</a></h2>
+      <p class="meta">${date(i.created_at)} ${chips(i.labels, label)}</p>
+    </div>`).join("") +
+    `<div class="pager">
+      ${page > 1 ? `<a href="${hash(label, page - 1)}">← Prev</a>` : "<span></span>"}
+      ${issues.length === PER_PAGE ? `<a href="${hash(label, page + 1)}">Next →</a>` : "<span></span>"}
+    </div>`;
+}
+
+async function showIssue(n) {
+  const i = await get("/issues/" + n);
+  app.innerHTML = `
+    <article class="detail">
+      <a href="#/">← Back to list</a>
+      <p class="num" style="margin:16px 0 0">No. ${i.number}</p>
+      <h1>${esc(i.title)}</h1>
+      <p class="meta">${date(i.created_at)} ${chips(i.labels, "")}</p>
+      <div class="body">${DOMPurify.sanitize(marked.parse(i.body || ""))}</div>
+      <p style="margin-top:32px"><a href="${i.html_url}" target="_blank" rel="noopener">Open on GitHub ↗</a></p>
+    </article>`;
+}
+
+async function route() {
+  const h = location.hash.replace(/^#\/?/, "");
+  const m = h.match(/^issue\/(\d+)/);
+  app.innerHTML = `<p class="status">Loading…</p>`;
+  try {
+    if (m) { await showIssue(m[1]); }
+    else {
+      const p = new URLSearchParams(h.replace(/^\?/, ""));
+      const label = p.get("label") || "";
+      const page = Math.max(1, Number(p.get("page")) || 1);
+      await Promise.all([showLabels(label), showList(label, page)]);
+    }
+    scrollTo(0, 0);
+  } catch (e) { app.innerHTML = `<p class="status">${esc(e.message)}</p>`; }
+}
+
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+name: 📄 Paper Note
+description: Add a reading note (one paper = one issue; issue title = paper title)
+title: "(Paper title)"
+labels: ["paper-note"]
+body:
+  - type: input
+    id: link
+    attributes:
+      label: Paper link
+      placeholder: https://arxiv.org/abs/xxxx.xxxxx
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: TL;DR
+      description: The main claim of the paper in 2-3 sentences
+    validations:
+      required: true
+  - type: textarea
+    id: memo
+    attributes:
+      label: Notes
+      description: Key ideas, impressions, open questions - anything goes
